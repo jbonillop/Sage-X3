@@ -1,92 +1,86 @@
+## VERIFICAR SI TOMA RESTO CARPETAS QUE NO SON SMIRA
+## VERIFICAR SI MUEVE LOS FICHEROS O SOLO LOS COPIA
+## Quito el mas de la línea Clear-Content
+## Ajusto programador de tareas para ejecutarse "Con los privilegios más altos"
+
 #====================================================================================
 #
-# SCRIPT:  X3_BATCH_SRV_MAINT.PS1
+# CÓDIGO:  ZSCSBPT.SRC
 # AUTOR:   JORDI BONILLO
 # FECHA:   19-02-2024
 #
-# POWERSHELL SCRIPT 
-# CLEANING TRACE FILES OF SAGE X3 BATCH SERVER FROM OUTSIDE THE X3 APPLICATION
-# MADE FOR A STANDALONE X3 INSTALLATION IN A WINDOWS ENVIRONMENT
+# LIMPIEZA DE FICHEROS DE TRAZA DE SERVIDOR BATCH X3 DESDE FUERA DE LA APLICACIÓN
+# 
+# PESE A QUE X3 INCLUYE UN SISTEMA DE ARCHIVADO/PURGADO PARA LOS FICHEROS DE TRAZA
+# QUE GENERAN LAS TAREAS POR CADA DOSSIER, LOS DATOS RELATIVOS A LOS FICHEROS
 #
-#==================================================================================== 
+#   /X3/SRV/TRA/serveur.tra
+#   /X3/SRV/TRA/RQTxxxxxx.tra
+#   /DOSSIER/TRA
 #
-# ALTOUGH SAGE X3 INCLUDES AN ARCHIVING/PURGING SYSTEM FOR TRACE (.TRA) FILES BY FOLDER,
-# OTRHER FILES LIKE
+# HAY QUE SEGUIR LIMPIÁNDOLOS MANUALMENTE.
+# PARA EVITAR ESTO:
 #
-#   /x3/SRV/TRA/serveur.tra
-#   /x3/SRV/TRA/RQTxxxxxx.tra
-#   ...
-#
-# SHOULD BE CLEANED MANUALLY
-#
-# IN ORDER TO AUTOMATIZE THE MAINTENANCE AND AVOID BATCH ERRORS AND SUDDENLY STOPS,
-# EXECUTE THIS SCRIPT ON THE FIRST DAY OF THE MONTH AT NON-WORKING HOURS.
+# 1) COMPROBAMOS EL ESTADO DEL SERVIDOR BATCH VÍA REST WEB SERVICES
+# 2) UNA VEZ SABEMOS QUE ESTÁ PARADO, REVISAMOS LA ESTRUCTURA DE CARPETAS DE BACKUP
+# 3) LIMPIAMOS DE LAS CARPETAS ARCHIVOS DE TRAZA MUY VIEJOS
+# 4) MOVEMOS LOS FICHEROS DESDE LAS CARPETAS X3 QUE NOS INTERESEN A LA ZONA BACKUP
 #
 #
-# WHAT DOES IT DO?
-# 1) CHECK THE BATCH SERVER STATUS VÍA REST WEB-SERVICE CALL
-# 2) STOPS THE SERVER IF NECCESARY. ONCE IT IS STOPPED, VERIFY/CREATE BACKUP FOLDERS
-# 3) FOR EACH WORK FOLDER, COPY/MOVE THE OLD .TRA FILES AND CLEAN ACCENTRY.TRA
-# 4) FOR THE REFERENCE FOLDER (X3), COPY/MOVE THE OLD .TRA FILES AND CLEAN SERVEUR.TRA
-# 5) STARTS THE BATCH SERVER, EVEN IF IT WAS STOPPED
+# El Script está pensado para ejecutrase el día 1 de cada mes. 
+# Copia todas las trazas del mes pasado a una carpeta nueva con el mes y el año
 #
 #====================================================================================
 
 #====================================================================================
-#
-#        HOW TO CHECK IF THE BATCH SERVER IS RUNNING FROM OUTSIDE SAGE X3?
-#
-#====================================================================================
-# Using API1 service call for versions 2017Rx / 2018R1 and future V12 (POST method)
-#  http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/stop
-#  http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/stopAll
-#  http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/start
-#  http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/status
-#
-#
-# Using batch server dispatcher for 2017Rx / 2018R1, V11 and future V12 (GET method)
-#  http://SERVERNAME/batch/stop/?code=BATCH-SERVER-CODE
-#  http://SERVERNAME/batch/stopAll/?code=BATCH-SERVER-CODE
-#  http://SERVERNAME/batch/start/?code=BATCH-SERVER-CODE
-#  http://SERVERNAME/batch/status/?code=BATCH-SERVER-CODE - status command only for 2017Rx / 2018R1 and future V12
+#Using API1 service call for versions 2017Rx / 2018R1 and future V12 (POST method)
+#http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/stop
+#http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/stopAll
+#http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/start
+#http://SERVER/NAME/api1/syracuse/collaboration/syracuse/batchServers(code eq "BATCH-SERVER-CODE")/$service/status
+
+
+#Using batch server dispatcher for 2017Rx / 2018R1, V11 and future V12 (GET method)
+#http://SERVERNAME/batch/stop/?code=BATCH-SERVER-CODE
+#http://SERVERNAME/batch/stopAll/?code=BATCH-SERVER-CODE
+#http://SERVERNAME/batch/start/?code=BATCH-SERVER-CODE
+#http://SERVERNAME/batch/status/?code=BATCH-SERVER-CODE - status command only for 2017Rx / 2018R1 and future V12
 #====================================================================================
 
 
 #====================================================================================
 #
-#                                      VARIABLES 
+#                                             VARIABLES 
 #
 #====================================================================================
-# X3 WEB SERVICE VARIABLES
-# REPLACE xXxXxXxX WITH THE LOGIN OF AN X3 USER WITH PERMISSIONS TO STOP BATCH SERVER
-$x3LoginBase64 = 'Basic xXxXxXxX'
+# X3 WEB SERVICE
+$x3LoginBase64 = 'WlgzU01BUFBXRUJTVkNTOjFMVmRrQnRob09QbkFndA'
 
-$batchServerName = "SMIRAX3"
-$server = 'localhost'                                                                  
+$batchservername = "SMIRAX3"
+$server = 'localhost'                                                                  #Uso http por ejecución en local
 $port = '8124'
-$protocol = 'http'                                                     #Plain HTTP use for simplicity. Use it only in localhost.
+$protocol = 'http'
 
 #'http://localhost:8124/api1/syracuse/collaboration/syracuse/batchServers...'
 $urlStatus = $protocol + '://' + $server + ':' + $port + '/api1/syracuse/collaboration/syracuse/batchServers'
-$urlStart  = $protocol + '://' + $server + ':' + $port + '/api1/syracuse/collaboration/syracuse/batchServers(code eq "'+$batchServerName+'")/$service/start'
-$urlStop   = $protocol + '://' + $server + ':' + $port + '/api1/syracuse/collaboration/syracuse/batchServers(code eq "'+$batchServerName+'")/$service/stop'
+$urlStart  = $protocol + '://' + $server + ':' + $port + '/api1/syracuse/collaboration/syracuse/batchServers(code eq "'+$batchservername+'")/$service/start'
+$urlStop   = $protocol + '://' + $server + ':' + $port + '/api1/syracuse/collaboration/syracuse/batchServers(code eq "'+$batchservername+'")/$service/stop'
 
-# SERVER VARIABLES
-$drive                 = "E:\"
-$driveBackup           = "F:\"
-$backupBaseFolder      = "BackupX3BatchSrv\"                                            # End with \
+# SERVIDOR
+$unidad                 = "E:\"
+$unidadBackup           = "F:\"
+$carpetaBackupBase      = "BackupX3BatchSrv\"                                           # Ha de terminar con \
 
-# X3 INSTALL VARIABLES
-# REPLACE xXxXxXxX WITH THE WORK FOLDER NAMES YOU WANT THE SCRIPT TO CLEAN. AVOID X3 BASE FOLDER.
-$x3DossierArray         = @("xXxXxXxX", "xXxXxXxX", "xXxXxXxX")
-$x3DossierDir           = "E:\xXxXxXxX\xXxXxXxX\folders\"                               # End with \
-$x3DossierTRAFolder     = "\TRA\"                                                       # Start and end with \
-$x3BaseDossierTRAFolder = "x3\SRV\TRA\"                                                 # End with \
+# X3 INSTALACIÓN
+$x3DossierArray         = @("SMIRA", "SMIRAPRE", "ALMSOL", "ALMSOLPRE")
+
+$x3DossierDir           = "E:\SAGE\SMIRAX3\folders\"                                    # Ha de terminar con \
+$x3DossierTRAFolder     = "\TRA\"                                                       # Ha de empezar y terminar con \
+$x3BaseDossierTRAFolder = "x3\SRV\TRA\"                                                 # Ha de terminar con \
 $accentryLogFileName    = "ACCENTRY.tra"
 $batchLogFileName       = "serveur.tra"
 
 #====================================================================================
-
 
 Write-Output "---------------------------------------------------"
 Write-Output "--- SCRIPT MANTENIMIENTO SERVIDOR BATCH SAGE X3 ---"
@@ -95,97 +89,105 @@ Write-Output "---------------------------------------------------"
 
 #====================================================================================
 #
-# 1) CHECK BATCH SERVER STATUS VÍA HTTP GET PETITION WITH SELECTED USER
+# 1) COMPROBAMOS EL ESTADO DEL SERVIDOR BATCH VÍA REST WEB SERVICES
 #
 #====================================================================================
-# Create web request with "Authorization" header
-$HEADERS = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
-$HEADERS.Add("Authorization", $x3LoginBase64)
 
-# Get the WebServer response and parse the status
+# Monto la petición web con usuario ADMINSM
+$HEADERS = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+$HEADERS.Add("Authorization", "Basic $x3LoginBase64")
+
+# Obtengo estado del servidor Batch vía llamada WS con método GET
 $RESPONSE = Invoke-RestMethod $urlStatus -Method 'GET' -Headers $HEADERS
 $STATUS = $RESPONSE.'$resources'.status
 Write-Output "El servidor batch está en estado: $STATUS"
 
-# If needed, stop the batch server:
+# Según el status, actúo...
 if ($STATUS -eq "running") {
-    $RESPONSE = Invoke-RestMethod $urlStop   -Method 'POST' -Headers $HEADERS
-    $RESPONSE = Invoke-RestMethod $urlStatus -Method 'GET'  -Headers $HEADERS
+    $RESPONSE = Invoke-RestMethod $urlStop -Method 'POST' -Headers $HEADERS
+    $RESPONSE = Invoke-RestMethod $urlStatus -Method 'GET' -Headers $HEADERS
     
-    # Stop the script execution to give the Server enough time to finish properly
-    # Should improve it by looping an status check 
+    # Espero a que esté parado del todo
     Write-Output "Paramos el batch. Pasuamos ejecución del script hasta que se detenga..."
-    Start-Sleep 15
+    Start-Sleep 10
+#
 } 
 #====================================================================================
 
 
+
 #====================================================================================
 #
-# 2) CHECK IF THE SERVER IS REALLY STOPPED. IF SO:
-#        CHECK IF THE BACKUP FOLDER STRUCTURE IS OK
-#        COPY/MOVE THE FILES TO THE BACKUP FOLDERS
-#        CLEAN THE LONG LOG FILES: ACCENTRY.tra, SERVEUR.tra
+# 2) UNA VEZ SABEMOS QUE ESTÁ PARADO, 
+#        REVISAMOS LA ESTRUCTURA DE CARPETAS DE BACKUP,
+#        HACEMOS LA COPIA DE LOS FICHEROS,
+#        DEJAMOS LOS FICHEROS DE TRAZA LIMPIOS.
 #       
 #====================================================================================
+
 $RESPONSE = Invoke-RestMethod $urlStatus -Method 'GET' -Headers $HEADERS
 $STATUS = $RESPONSE.'$resources'.status
-
 if ($STATUS -eq "stopped") {
     Write-Output "Batch detenido"
     Write-Output "Creando directorios y lanzando copia de ficheros"
 
     $fechaCarpeta = (Get-Date).AddMonths(-1).ToString("yyyyMM")
-    $carpetaBackup = $driveBackup+$backupBaseFolder+$fechaCarpeta+"\"
+    $carpetaBackup = $unidadBackup+$carpetaBackupBase+$fechaCarpeta+"\"
+    #Write-Output $carpetaBackup
 
 
-    # FOR THE WORKING X3 DOSSIERS
+    # ACTÚO PARA LOS DOSSIERES DE TRABAJO
     foreach ($dossier in $x3DossierArray) {
         Write-Output "Trabajando en dossier $dossier"
+        # Carpeta origen
+        $carpetaOrigen = $x3DossierDir+$dossier+$x3DossierTRAFolder
 
-        # Source and destination folder
-        $carpetaOrigen  = $x3DossierDir  + $dossier + $x3DossierTRAFolder
-        $carpetaDestino = $carpetaBackup + $dossier
+        # Carpeta destino
+        $carpetaDestino = $carpetaBackup+$dossier
 
-        # Test if destination folder exists. If not, create it.
+        # Compruebo si la carpeta destino existe. Si no, la creo.
         if (-not (Test-Path -Path $carpetaDestino -PathType Container)) {        
             New-Item -Path $carpetaDestino -ItemType Directory
         }
 
         # Copio los ficheros que me interesan
-        #Get-ChildItem -Path $carpetaOrigen | Where-Object {($_.LastWriteTime -gt (Get-Date).AddDays(-30))} | Copy-Item -Destination $carpetaDestino
-        Get-ChildItem -Path $carpetaOrigen | Where-Object {($_.LastWriteTime -gt (Get-Date).AddMonths(-1))} | Move-Item -Destination $carpetaDestino
-        
+        Get-ChildItem -Path $carpetaOrigen | Where-Object {($_.LastWriteTime -gt (Get-Date).AddDays(-30))} | Move-Item -Destination $carpetaDestino
+
         #Limpio el fichero origen
-        Clear-Content $carpetaOrigen+$accentryLogFileName
+        Clear-Content $carpetaOrigen$accentryLogFileName
     }
 
 
-    # FOR THE X3 REFERENCE DOSSIER
-    # DOES THE SAME IN A DIFFERENT SOURCE FOLDER
+    # ACTÚO PARA EL DOSSIER X3
+    # Hago lo mismo pero para el dossier de referencia (x3) que tiene una carpeta diferente al resto
     Write-Output "Trabajando en dossier x3"
-    $carpetaOrigen  = $x3DossierDir  + $x3BaseDossierTRAFolder
-    $carpetaDestino = $carpetaBackup + $x3BaseDossierTRAFolder
+    $carpetaOrigen = $x3DossierDir+$x3BaseDossierTRAFolder
+    $carpetaDestino = $carpetaBackup+$x3BaseDossierTRAFolder
 
     if (-not (Test-Path -Path $carpetaDestino -PathType Container)) {        
         New-Item -Path $carpetaDestino -ItemType Directory
     }
 
-    Get-ChildItem -Path $carpetaOrigen | Where-Object {($_.LastWriteTime -gt (Get-Date).AddMonths(-1))} | Move-Item -Destination $carpetaDestino
+    # Copio ficheros
+    Get-ChildItem -Path $carpetaOrigen | Where-Object {($_.LastWriteTime -gt (Get-Date).AddDays(-30))} | Move-Item -Destination $carpetaDestino
 
-    Clear-Content $carpetaOrigen+$batchLogFileName
+    # Limpio traza
+    Clear-Content $carpetaOrigen$batchLogFileName
 }
+#
 #====================================================================================
+
+
 
 
 #====================================================================================
 #
-# 3) START THE BATCH SERVER
+# 3) VUELVO A PONER EN MARCHA EL SERVIDOR BATCH
 #
 #====================================================================================
 if ($STATUS -eq "stopped") {
-    $RESPONSE = Invoke-RestMethod $urlStart  -Method 'POST' -Headers $HEADERS
-    $RESPONSE = Invoke-RestMethod $urlStatus -Method 'GET'  -Headers $HEADERS
+    $RESPONSE = Invoke-RestMethod $urlStart -Method 'POST' -Headers $HEADERS
+    $RESPONSE = Invoke-RestMethod $urlStatus -Method 'GET' -Headers $HEADERS
     $STATUS = $RESPONSE.'$resources'.status
     Write-Output "El servidor batch se queda en estado $STATUS"
     Start-Sleep 5
